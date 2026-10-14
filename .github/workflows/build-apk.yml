@@ -46,11 +46,11 @@ jobs:
       - name: Analyze
         run: dart analyze --no-fatal-infos || true
 
-      # Release 签名：keystore 存在 fork 仓库 Secrets（ANDROID_KEYSTORE_BASE64 为
-      # jks 的 base64），密码在 ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS /
-      # ANDROID_KEY_PASSWORD。缺失时 build.gradle 回退 debug 签名。
+      # Release 签名：keystore 存于 fork 仓库 Secrets（ANDROID_KEYSTORE_BASE64 为
+      # jks 的 base64），解码成 android/alistclient-release.jks + key.properties。
+      # 注意：GitHub 不允许在 step if 中引用 secrets 上下文；该 workflow 只在本 fork
+      # 使用，secrets 已配置。
       - name: Decode release keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
