@@ -46,6 +46,27 @@ jobs:
       - name: Analyze
         run: dart analyze --no-fatal-infos || true
 
+      # Release 签名：keystore 存在 fork 仓库 Secrets（ANDROID_KEYSTORE_BASE64 为
+      # jks 的 base64），密码在 ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS /
+      # ANDROID_KEY_PASSWORD。缺失时 build.gradle 回退 debug 签名。
+      - name: Decode release keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/alistclient-release.jks
+          {
+            echo "storeFile=alistclient-release.jks"
+            echo "storePassword=${ANDROID_KEYSTORE_PASSWORD}"
+            echo "keyAlias=${ANDROID_KEY_ALIAS}"
+            echo "keyPassword=${ANDROID_KEY_PASSWORD}"
+          } > android/key.properties
+          ls -l android/alistclient-release.jks android/key.properties
+
       - name: Build APK (release)
         run: |
           printf 'org.gradle.java.home=%s\n' "$JAVA_HOME" >> android/gradle.properties
