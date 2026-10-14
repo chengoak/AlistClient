@@ -1,0 +1,84 @@
+name: build-android-apk
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter 3.13.9
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.13.9
+          channel: stable
+          cache: true
+
+      - name: Show versions
+        run: |
+          flutter --version
+          dart --version
+
+      # pubspec declares Dart <3.0.0, but the locked deps (e.g. extended_image
+      # 8.x) require Flutter >=3.10 / Dart 3. Relax the upper bound at build time
+      # only, without modifying the committed file.
+      - name: Relax Dart SDK upper bound (build-only)
+        run: |
+          sed -i "s/'>=2.19.6 <3.0.0'/'>=2.19.6 <4.0.0'/" pubspec.yaml
+          grep -A1 '^environment:' pubspec.yaml
+
+      - name: Accept Android licenses
+        run: yes | flutter doctor --android-licenses || true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: dart analyze --no-fatal-infos || true
+
+      - name: Build APK (release)
+        run: |
+          printf 'org.gradle.java.home=%s\n' "$JAVA_HOME" >> android/gradle.properties
+          flutter build apk --release
+
+      - name: Rename APK
+        id: rename
+        run: |
+          VERSION=$(grep -E '^version:' pubspec.yaml | awk '{print $2}')
+          SHORT_SHA="${GITHUB_SHA::7}"
+          APK_NAME="AlistClient-${VERSION}-${SHORT_SHA}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "${APK_NAME}"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh "${APK_NAME}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.rename.outputs.apk_name }}
+          path: ${{ steps.rename.outputs.apk_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.rename.outputs.apk_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
