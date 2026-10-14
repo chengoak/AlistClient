@@ -34,14 +34,9 @@ jobs:
           flutter --version
           dart --version
 
-      # pubspec declares Dart <3.0.0, but the locked deps (e.g. extended_image
-      # 8.x) require Flutter >=3.10 / Dart 3. Relax the upper bound at build time
-      # only, without modifying the committed file.
-      - name: Relax Dart SDK upper bound (build-only)
-        run: |
-          sed -i "s/'>=2.19.6 <3.0.0'/'>=2.19.6 <4.0.0'/" pubspec.yaml
-          grep -A1 '^environment:' pubspec.yaml
-
+      # The committed pubspec.yaml already allows Dart <4.0.0 and pins
+      # flutter_pdfview to 1.3.2; pubspec.lock is committed, so `pub get`
+      # installs exactly the locked, build-verified dependency set.
       - name: Accept Android licenses
         run: yes | flutter doctor --android-licenses || true
 
