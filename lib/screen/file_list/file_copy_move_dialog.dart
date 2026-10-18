@@ -409,11 +409,106 @@ class FileCopyMoveController extends GetxController {
     );
   }
 
+  bool _submitting = false;
+
   void httpCopyMove() {
+    if (_submitting) {
+      return;
+    }
+    _submitting = true;
+
+    // List the target folder (including files, since loadFiles only keeps dirs)
+    // to find items with the same names before requesting copy/move.
+    var body = {
+      "path": path,
+      "password": (_password ?? ""),
+      "page": 1,
+      "per_page": 0,
+      "refresh": false
+    };
+
+    SmartDialog.showLoading();
+    DioUtils.instance.requestNetwork<FileListRespEntity>(
+      Method.post,
+      "fs/list",
+      params: body,
+      onSuccess: (data) {
+        SmartDialog.dismiss();
+        _submitting = false;
+
+        final existingNames =
+            (data?.content ?? []).map((e) => e.name).toSet();
+        final conflicts =
+            names.where((name) => existingNames.contains(name)).toList();
+        if (conflicts.isEmpty) {
+          _doHttpCopyMove(false);
+        } else {
+          _showOverwriteConfirmDialog(conflicts);
+        }
+      },
+      onError: (code, msg) {
+        SmartDialog.dismiss();
+        _submitting = false;
+        SmartDialog.showToast(msg);
+      },
+    );
+  }
+
+  void _showOverwriteConfirmDialog(List<String> conflictNames) {
+    SmartDialog.show(
+      clickMaskDismiss: false,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(Intl.fileCopyMoveDialog_overwriteTitle.tr),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isCopy
+                    ? Intl.fileCopyMoveDialog_overwriteCopyMsg.tr
+                    : Intl.fileCopyMoveDialog_overwriteMoveMsg.tr,
+              ),
+              const SizedBox(height: 10),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: conflictNames.length,
+                  separatorBuilder: (context, index) =>
+                      const Divider(height: 1),
+                  itemBuilder: (context, index) => Text(
+                    conflictNames[index],
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => SmartDialog.dismiss(),
+              child: Text(Intl.fileCopyMoveDialog_cancel.tr),
+            ),
+            TextButton(
+              onPressed: () {
+                SmartDialog.dismiss();
+                _doHttpCopyMove(true);
+              },
+              child: Text(Intl.fileCopyMoveDialog_overwriteConfirm.tr),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _doHttpCopyMove(bool overwrite) {
     CopyMoveReq req = CopyMoveReq();
     req.srcDir = originalFolder;
     req.dstDir = path;
     req.names = names;
+    req.overwrite = overwrite;
     String url = isCopy ? "fs/copy" : "fs/move";
 
     SmartDialog.showLoading();
