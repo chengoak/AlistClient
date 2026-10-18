@@ -2,6 +2,7 @@ import 'package:alist/database/alist_database_controller.dart';
 import 'package:alist/database/table/file_password.dart';
 import 'package:alist/entity/file_list_resp_entity.dart';
 import 'package:alist/entity/copy_move_req.dart';
+import 'package:alist/entity/file_remove_req.dart';
 import 'package:alist/entity/mkdir_req.dart';
 import 'package:alist/l10n/intl_keys.dart';
 import 'package:alist/net/dio_utils.dart';
@@ -493,7 +494,7 @@ class FileCopyMoveController extends GetxController {
             TextButton(
               onPressed: () {
                 SmartDialog.dismiss();
-                _doHttpCopyMove(true);
+                _doHttpCopyMove(true, conflictNames: conflictNames);
               },
               child: Text(Intl.fileCopyMoveDialog_overwriteConfirm.tr),
             ),
@@ -503,7 +504,35 @@ class FileCopyMoveController extends GetxController {
     );
   }
 
-  void _doHttpCopyMove(bool overwrite) {
+  void _doHttpCopyMove(bool overwrite, {List<String> conflictNames = const []}) {
+    if (overwrite && conflictNames.isNotEmpty) {
+      // The overwrite field is only supported by AList v3.42.0 and later;
+      // older servers ignore it and keep returning "file exists". Delete the
+      // destination items first so the overwrite works on every server version.
+      FileRemoveReq removeReq = FileRemoveReq();
+      removeReq.dir = path;
+      removeReq.names = conflictNames;
+
+      SmartDialog.showLoading();
+      DioUtils.instance.requestNetwork(
+        Method.post,
+        "fs/remove",
+        params: removeReq.toJson(),
+        onSuccess: (data) {
+          SmartDialog.dismiss();
+          _sendCopyMoveRequest(true);
+        },
+        onError: (code, msg) {
+          SmartDialog.dismiss();
+          SmartDialog.showToast(msg);
+        },
+      );
+    } else {
+      _sendCopyMoveRequest(overwrite);
+    }
+  }
+
+  void _sendCopyMoveRequest(bool overwrite) {
     CopyMoveReq req = CopyMoveReq();
     req.srcDir = originalFolder;
     req.dstDir = path;
