@@ -551,6 +551,16 @@ class FileCopyMoveController extends GetxController {
     }
   }
 
+  // Matches the server-side conflict error:
+  //   "file [<name>] exists"
+  // AList and OpenList return this (HTTP 403) from the copy/move precheck,
+  // including for folders. Listing-based conflict detection can disagree with
+  // the server (e.g. a stale destination directory cache after a previous
+  // cross-storage background task), so we also handle this error reactively:
+  // ask the user to overwrite, then delete the destination item and retry.
+  static final RegExp _fileExistsRegExp =
+      RegExp(r'^\s*file\s*\[(.*)\]\s+exists\s*$', caseSensitive: false);
+
   void _sendCopyMoveRequest(bool overwrite) {
     CopyMoveReq req = CopyMoveReq();
     req.srcDir = originalFolder;
@@ -570,8 +580,20 @@ class FileCopyMoveController extends GetxController {
       }
       Get.back(result: {"result": true});
     }, onError: (code, msg) {
-      SmartDialog.showToast(msg);
       SmartDialog.dismiss();
+      final match = _fileExistsRegExp.firstMatch(msg);
+      final conflictName = match?.group(1);
+      // Only treat it as a conflict for an item we are actually moving, and
+      // never loop on an overwrite request (the server should skip the
+      // precheck when overwrite is true).
+      if (code == 403 &&
+          !overwrite &&
+          conflictName != null &&
+          names.contains(conflictName)) {
+        _showOverwriteConfirmDialog([conflictName]);
+      } else {
+        SmartDialog.showToast(msg);
+      }
     });
   }
 }
