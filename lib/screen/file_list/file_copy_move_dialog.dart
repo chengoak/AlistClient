@@ -410,68 +410,8 @@ class FileCopyMoveController extends GetxController {
     );
   }
 
-  bool _submitting = false;
-
   void httpCopyMove() {
-    if (_submitting) {
-      return;
-    }
-    _submitting = true;
-
-    // List the target folder (including files, since loadFiles only keeps dirs)
-    // to find items with the same names before requesting copy/move.
-    //
-    // Force a refresh: cross-storage copy/move on AList/OpenList runs as a
-    // background task and the destination directory listing cache is not always
-    // invalidated afterwards, so a cached listing (refresh:false) can miss an
-    // already-existing file. The server-side copy/move precheck queries the
-    // real object and would then reject the request with "file exists" even
-    // though we never showed the overwrite dialog. Refreshing makes the
-    // conflict check and the server precheck agree.
-    _listTargetForConflict(refresh: true);
-  }
-
-  void _listTargetForConflict({required bool refresh}) {
-    var body = {
-      "path": path,
-      "password": (_password ?? ""),
-      "page": 1,
-      "per_page": 0,
-      "refresh": refresh
-    };
-
-    SmartDialog.showLoading();
-    DioUtils.instance.requestNetwork<FileListRespEntity>(
-      Method.post,
-      "fs/list",
-      params: body,
-      onSuccess: (data) {
-        SmartDialog.dismiss();
-        _submitting = false;
-
-        final existingNames =
-            (data?.content ?? []).map((e) => e.name).toSet();
-        final conflicts =
-            names.where((name) => existingNames.contains(name)).toList();
-        if (conflicts.isEmpty) {
-          _doHttpCopyMove(false);
-        } else {
-          _showOverwriteConfirmDialog(conflicts);
-        }
-      },
-      onError: (code, msg) {
-        // Some servers reject refresh:true for accounts without the
-        // "refresh without permission" right. Fall back to a normal listing
-        // instead of aborting the copy/move.
-        if (refresh && code == 403) {
-          _listTargetForConflict(refresh: false);
-          return;
-        }
-        SmartDialog.dismiss();
-        _submitting = false;
-        SmartDialog.showToast(msg);
-      },
-    );
+    _sendCopyMoveRequest(overwrite: false, conflictNames: const []);
   }
 
   void _showOverwriteConfirmDialog(List<String> conflictNames) {
@@ -513,7 +453,7 @@ class FileCopyMoveController extends GetxController {
             TextButton(
               onPressed: () {
                 SmartDialog.dismiss();
-                _doHttpCopyMove(true, conflictNames: conflictNames);
+                _overwriteAndRetry(conflictNames);
               },
               child: Text(Intl.fileCopyMoveDialog_overwriteConfirm.tr),
             ),
@@ -523,45 +463,57 @@ class FileCopyMoveController extends GetxController {
     );
   }
 
-  void _doHttpCopyMove(bool overwrite, {List<String> conflictNames = const []}) {
-    if (overwrite && conflictNames.isNotEmpty) {
-      // The overwrite field is only supported by AList v3.42.0 and later;
-      // older servers ignore it and keep returning "file exists". Delete the
-      // destination items first so the overwrite works on every server version.
-      FileRemoveReq removeReq = FileRemoveReq();
-      removeReq.dir = path;
-      removeReq.names = conflictNames;
+  // Conflicts the user has already confirmed. The server reports only the
+  // first conflicting name per request, so on old servers (which ignore the
+  // overwrite field) this set prevents prompting twice for the same name.
+  final Set<String> _confirmedConflicts = {};
 
-      SmartDialog.showLoading();
-      DioUtils.instance.requestNetwork(
-        Method.post,
-        "fs/remove",
-        params: removeReq.toJson(),
-        onSuccess: (data) {
-          SmartDialog.dismiss();
-          _sendCopyMoveRequest(true);
-        },
-        onError: (code, msg) {
-          SmartDialog.dismiss();
-          SmartDialog.showToast(msg);
-        },
-      );
-    } else {
-      _sendCopyMoveRequest(overwrite);
-    }
+  // User confirmed overwriting [newConflicts]: delete those destination items
+  // (required by servers that ignore the overwrite field) and retry the whole
+  // copy/move with overwrite:true (newer servers skip the precheck).
+  void _overwriteAndRetry(List<String> newConflicts) {
+    _confirmedConflicts.addAll(newConflicts);
+
+    FileRemoveReq removeReq = FileRemoveReq();
+    removeReq.dir = path;
+    removeReq.names = newConflicts;
+
+    SmartDialog.showLoading();
+    DioUtils.instance.requestNetwork(
+      Method.post,
+      "fs/remove",
+      params: removeReq.toJson(),
+      onSuccess: (data) {
+        SmartDialog.dismiss();
+        _sendCopyMoveRequest(
+          overwrite: true,
+          conflictNames: _confirmedConflicts.toList(),
+        );
+      },
+      onError: (code, msg) {
+        SmartDialog.dismiss();
+        SmartDialog.showToast(msg);
+      },
+    );
   }
 
   // Matches the server-side conflict error:
   //   "file [<name>] exists"
-  // AList and OpenList return this (HTTP 403) from the copy/move precheck,
-  // including for folders. Listing-based conflict detection can disagree with
-  // the server (e.g. a stale destination directory cache after a previous
-  // cross-storage background task), so we also handle this error reactively:
-  // ask the user to overwrite, then delete the destination item and retry.
+  // AList (>= v3.42.0) and OpenList return this with HTTP 403 from the
+  // fs/copy / fs/move precheck, including for folders.
+  //
+  // We do not pre-check conflicts with fs/list: the listing can disagree with
+  // the server precheck because of directory cache or driver differences, and
+  // refresh:true cannot always fix that. Instead we submit the request and
+  // react to the authoritative server error, asking the user whether to
+  // overwrite the reported item.
   static final RegExp _fileExistsRegExp =
       RegExp(r'^\s*file\s*\[(.*)\]\s+exists\s*$', caseSensitive: false);
 
-  void _sendCopyMoveRequest(bool overwrite) {
+  void _sendCopyMoveRequest({
+    required bool overwrite,
+    required List<String> conflictNames,
+  }) {
     CopyMoveReq req = CopyMoveReq();
     req.srcDir = originalFolder;
     req.dstDir = path;
@@ -583,13 +535,14 @@ class FileCopyMoveController extends GetxController {
       SmartDialog.dismiss();
       final match = _fileExistsRegExp.firstMatch(msg);
       final conflictName = match?.group(1);
-      // Only treat it as a conflict for an item we are actually moving, and
-      // never loop on an overwrite request (the server should skip the
-      // precheck when overwrite is true).
+      // Only treat it as a conflict for an item we are actually moving.
+      // - First request (overwrite:false): ask before doing anything.
+      // - Retry (overwrite:true) on a server that ignores the field: only ask
+      //   again when the server reports a different, not-yet-confirmed name.
       if (code == 403 &&
-          !overwrite &&
           conflictName != null &&
-          names.contains(conflictName)) {
+          names.contains(conflictName) &&
+          (!overwrite || !conflictNames.contains(conflictName))) {
         _showOverwriteConfirmDialog([conflictName]);
       } else {
         SmartDialog.showToast(msg);
