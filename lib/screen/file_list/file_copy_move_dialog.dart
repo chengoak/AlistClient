@@ -420,12 +420,24 @@ class FileCopyMoveController extends GetxController {
 
     // List the target folder (including files, since loadFiles only keeps dirs)
     // to find items with the same names before requesting copy/move.
+    //
+    // Force a refresh: cross-storage copy/move on AList/OpenList runs as a
+    // background task and the destination directory listing cache is not always
+    // invalidated afterwards, so a cached listing (refresh:false) can miss an
+    // already-existing file. The server-side copy/move precheck queries the
+    // real object and would then reject the request with "file exists" even
+    // though we never showed the overwrite dialog. Refreshing makes the
+    // conflict check and the server precheck agree.
+    _listTargetForConflict(refresh: true);
+  }
+
+  void _listTargetForConflict({required bool refresh}) {
     var body = {
       "path": path,
       "password": (_password ?? ""),
       "page": 1,
       "per_page": 0,
-      "refresh": false
+      "refresh": refresh
     };
 
     SmartDialog.showLoading();
@@ -448,6 +460,13 @@ class FileCopyMoveController extends GetxController {
         }
       },
       onError: (code, msg) {
+        // Some servers reject refresh:true for accounts without the
+        // "refresh without permission" right. Fall back to a normal listing
+        // instead of aborting the copy/move.
+        if (refresh && code == 403) {
+          _listTargetForConflict(refresh: false);
+          return;
+        }
         SmartDialog.dismiss();
         _submitting = false;
         SmartDialog.showToast(msg);
